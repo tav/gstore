@@ -1,12 +1,15 @@
 // Public Domain (-) 2013 The Ampstore Authors.
 // See the Ampstore UNLICENSE file for details.
 
-// package ampstore
-package main
+package ampstore
+
+// package main
 
 import (
+	"fmt"
 	"github.com/tav/golly/dynamodb"
-	"reflect"
+	// "reflect"
+	"time"
 )
 
 type DB struct {
@@ -16,11 +19,39 @@ type DB struct {
 	pending []byte
 }
 
+// max hash key 2048 bytes
+// max range key 1024 bytes
+// items size 64kb
+// query/scan results set 1mb
+// batch write item 25ops and 1mb
+// batch get 100ops and 1mb
+
+// User:tom/Message:27197
+
+// Item
+
+//     RootKey "User:tom"
+//     PathKey "\x01Message:27197"
+//     Data    toJSON({"content": "hi"})
+
+//     RootKey "User:tom:root"
+//     PathKey "\x00"
+//     Data    toJSON({"name": "Tom Salfield", "home": "London"})
+
 func (db *DB) Init() error {
 	// Check if tables exists.
 	// Else create tables.
 	// db.client.Call("CreateTable", db.name+"-indexes")
-	// db.client.Call("CreateTable", db.name+"-items")
+	db.client.Call("CreateTable", dynamodb.Map{
+		"AttributeDefinitions": []dynamodb.Map{
+			{"AttributeName": "", "AttributeType": ""},
+			{"AttributeName": "", "AttributeType": ""},
+		},
+		"KeySchema": []dynamodb.Map{
+			{"AttributeName": "R", "KeyType": "HASH"},
+			{"AttributeName": "K", "KeyType": "RANGE"},
+		},
+	})
 	// db.client.Call("CreateTable", db.name+"-roots")
 	// db.client.Call("CreateTable", db.name+"-counters")
 	return nil
@@ -50,10 +81,23 @@ func (db *DB) MultiPut(keys []*Key, value interface{}) error {
 	return nil
 }
 
-func (db *DB) Put(key *Key, value interface{}) error {
-	if db.txn {
+// type Map map[string]interface{}
 
-	}
+// func (db *DB) makeRequest(method string, payload []byte) (resp Map, err error) {
+// 	payload, err = db.client.RawRequest(method, payload)
+// 	// fmt.Println("RESP PAYLOAD: ", string(payload))
+// 	if err != nil {
+// 		return
+// 	}
+// 	resp = Map{}
+// 	err = json.Unmarshal(payload, &resp)
+// 	return
+// }
+
+func (db *DB) Put(key *Key, value interface{}) error {
+	// if db.txn {
+
+	// }
 	return nil
 }
 
@@ -104,9 +148,7 @@ func (q *Query) Limit(n int) *Query {
 	return q
 }
 
-type Cursor []byte
-
-func (q *Query) WithCursor(c Cursor) *Query {
+func (q *Query) WithCursor(c []byte) *Query {
 	return q
 }
 
@@ -129,7 +171,7 @@ func (db *DB) Query() *Query {
 // 	}
 // }
 
-func (db *DB) Transact(handler func(*DB) error) error {
+func (db *DB) Transact(handler func(db *DB) error) error {
 	newDB := &DB{
 		client: db.client,
 		txn:    true,
@@ -148,53 +190,17 @@ func (db *DB) Transact(handler func(*DB) error) error {
 	}
 }
 
-type Counter struct {
-	DB   *DB
-	Name string
-}
-
-func (c *Counter) Incr() error {
+func (db *DB) Incr(key *Key) error {
 	return nil
 }
 
-func (c *Counter) Decr() error {
+func (db *DB) Decr(key *Key) error {
 	return nil
 }
 
-func (c *Counter) Add(n int) error {
+func (db *DB) Add(key *Key, n int) error {
 	return nil
 }
-
-func (c *Counter) Subtract(n int) error {
-	return nil
-}
-
-type Order struct {
-	CustomerID string `db:"noindex"`
-}
-
-var registry = map[string]reflect.Type{}
-
-func Register(name string, example interface{}) {
-	registry[name] = reflect.TypeOf(example)
-}
-
-func New(name string, client *dynamodb.Client) *DB {
-	return &DB{
-		name:   name,
-		client: client,
-	}
-}
-
-type Key struct {
-	Kind     string
-	StringID string
-	IntID    int64
-	Parent   *Key
-}
-
-// db.Put(db.Key("User", "tom"), somePointer)
-// db.Put(db.AutoID("Message"), somePointer)
 
 func (db *DB) AutoID(kind string) *Key {
 	return &Key{
@@ -210,56 +216,29 @@ func (db *DB) Key(kind, id string) *Key {
 	}
 }
 
-func (k *Key) WithParent(p *Key) *Key {
-	k.Parent = p
-	return k
+func (db *DB) Subtract(key *Key, n int) error {
+	return nil
 }
 
-func (k *Key) Equals(o *Key) bool {
-	if k.Kind == o.Kind && k.IntID == o.IntID && k.StringID == o.StringID {
-		if k.Parent == nil {
-			if o.Parent == nil {
-				return true
-			}
-			return false
-		}
-		if o.Parent == nil {
-			return false
-		}
-		return k.Parent.Equals(o.Parent)
-	}
-	return false
-}
+// type Order struct {
+// 	CustomerID string `db:"noindex"`
+// }
 
-func (k *Key) Equals2(o *Key) bool {
-	for k != nil && o != nil {
-		if k.Kind != o.Kind || k.StringID != o.StringID || k.IntID != o.IntID {
-			return false
-		}
-		k, o = k.Parent, o.Parent
-	}
-	return k == o
-}
+// db.Put(db.Key("User", "tom"), somePointer)
+// db.Put(db.AutoID("Message"), somePointer)
 
-func (k *Key) Incomplete() bool {
-	if k.IntID == -1 || k.IntID == 0 {
-		return true
+func Dial(name string, client *dynamodb.Client) *DB {
+	return &DB{
+		name:   name,
+		client: client,
 	}
-	return k.StringID == ""
-}
-
-func (k *Key) Root() *Key {
-	for k.Parent != nil {
-		k = k.Parent
-	}
-	return k
 }
 
 func main() {
-	client := dynamodb.Dial(dynamodb.USWest1, dynamodb.Auth("access", "secret"), nil)
-	db := New("wikifactory", client)
-	db.Init()
-	// db.Counter("units-sold").Add(20)
+	// client := dynamodb.Dial(dynamodb.USWest1, dynamodb.Auth("access", "secret"), nil)
+	db := Dial("wikifactory", nil)
+
+	// db.Init()
 	// db.Transact(func(db *DB) error {
 	// 	o := &Order{}
 	// 	err := db.Get("foo", o)
@@ -335,10 +314,6 @@ func main() {
 	// 	Dimension int
 	// }
 
-}
-
-type Keyer interface {
-	Key() string
 }
 
 // TODO(tom): It would be advantageous to minimise latency
