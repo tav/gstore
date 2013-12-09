@@ -1,0 +1,94 @@
+AmpstoreClient 
+==============
+Is loaded into application server and provides the AmpstoreAPI to application databases to interact with a consistent, scalable, high-throughput datastore through a client API
+
+A. Provides Put()  /Get/Delete/Push/Query as calls into Ampstore Node
+
+B. Provides cross key tranasctions, consistent reads.  
+
+C. A high throughput task queue is provided
+
+D. Send non-txn PUSH ops to collector
+
+E. Run a collector using Serf membership to define
+
+Requests KeyRange asscociated Ampstore Nodes from Master/DynamoDB  
+
+
+Ampstore Node
+=============
+A. Write to Commit Log e.g. Put "Value"
+1. Receives ClientLib Write Data
+2. Read meta commit-entry, write to the DynamoDB with write UUID, then do check and set on latest commit-entry in meta file to.
+3. Writes MemTable 
+
+B. Load Data from S3 and Commit Log into memtable
+
+C. Provide RPC to support client API 
+
+D. Talk to the master to get key_range leases
+
+E. Execute/apply "Push" requests in response to client request
+
+F. Snapshot memtable to S3 and store checkpoint to Meta
+
+G. Splits Key Range once limits exceeded, tell master to update routing table in dynamodb
+
+
+MemTable
+--------
+- Lexographical Key Range associated data (in chunks of about 1Mb) is Periodically Snapshoted to S3.
+
+
+Ampstore Master Node
+--------------------
+A. Dynamodb noisy tyrant protocol - Regularly renew lease for Master Status.
+B. Monitors Ampstore Nodes for capacity, availability.
+C. Give out leases to Ampstore Nodes. Nudge nodes to ask for lease - client requests something not in memory
+   	    	      	       	      	    	     	     	   - when ampstore node leaves serf cluster
+D. Queries and updates routing ranges from Dynamodb.
+E. Responds to key-range request from client with node, address and time-left
+
+Dynamodb
+--------
+A. Commit Log
+B. A "Key Range" to "S3 Storage" mapping
+
+S3
+--
+- provides a store for key_range data
+
+Serf
+----
+Uses gossip networks to coordinate a list of:
+- AmpStore Nodes - tell Ampstore Master when node leaves/joins
+- AppServer - 
+- Redis Cache???
+
+
+Notes
+-----
+Leveldb allows a single database server process to serve requests backed by disk storage and manage concurrent, incremental snapshotting of the disk storage whilst maintaining consistency of read requests over a large key-range (e.g. terabytes of key-value data).
+
+Ampstore - obviates the problem solved by leveldb and instead separates the key-range into smaller chunks equivalent to approximately the amount stored in a single SSTable in leveldb (e.g. 1Mb). All data in currently requested ranges, is always loaded into memory. When changes are made:
+a) The commit is logged to the dynanmodb commit log.
+b) the memtable is modified and grows.
+
+When periodically a snapshot process is run, it merges the commit log into the on disk state for the small key-range chunk, this can be run in separate process or potentiallydelgated to, and executed on, another node.
+
+When a snapshot process completes the node which is currently responsible for serving the key-range has the new compressed state which can be loaded into a memtable. There are now two choices:
+1. We can try and load the new snapshot into the memtable, bring the new memtable up-to-speed with the commit log and switch the new table with old memtable. This could be awkward if the memtable is under heavy write-pressure.
+2. We can attempt to periodically compact the memtable and only use the on-disk snapshot when a key-range is loaded into memory.
+What does leveldb do?
+
+What we should do?
+=> before snapshotting, set checkpoint and then...
+a) create a new memtable (collector) receiving all further commit logs after the checkpoint
+b) continue to use the old memtable
+
+=> run snapshot == separate process ==> 
+
+=> after creating flattened memtable (upto checkpoint), snapshotting it at a checkpoint and saving to s3 (and locally):
+a) load the new memtable from flattened
+b) link in collected data??
+c) switch the new memtable in and drop the old memtables
