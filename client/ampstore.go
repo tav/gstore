@@ -3,8 +3,6 @@
 
 package ampstore
 
-// package main
-
 import (
 	"fmt"
 	"github.com/tav/golly/dynamodb"

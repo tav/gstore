@@ -1,3 +1,11 @@
+// Public Domain (-) 2013 The Ampstore Authors.
+// See the Ampstore UNLICENSE file for details.
+//
+// This file is adapted from the BSD-style license
+// of LevelDB-Go:
+//
+//     leveldb/memdb/memdb.go
+
 // Copyright 2011 The LevelDB-Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
@@ -16,6 +24,7 @@ import (
 	"encoding/binary"
 	"errors"
 	//"fmt"
+	"io"
 	"math/rand"
 	"sync"
 )
@@ -74,12 +83,8 @@ type MemDB struct {
 	kvData []byte
 	// nodeData is an append-only buffer that holds a node's fields.
 	nodeData []int
-	// indicates that this memdb has been changes since last compaction
-	Dirty bool
-}
-
-func (m *MemDB) compare(a, b []byte) int {
-	return bytes.Compare(a, b)
+	// commits since the last checkpoint
+	KvLen int
 }
 
 // load loads a []byte from m.kvData.
@@ -100,9 +105,11 @@ func (m *MemDB) saveBytes(b []byte) (kvOffset int) {
 	}
 	kvOffset = len(m.kvData)
 	var buf [binary.MaxVarintLen64]byte
-	length := binary.PutUvarint(buf[:], uint64(len(b)))
+	lenBytes := len(b)
+	length := binary.PutUvarint(buf[:], uint64(lenBytes))
 	m.kvData = append(m.kvData, buf[:length]...)
 	m.kvData = append(m.kvData, b...)
+	m.KvLen = kvOffset + lenBytes // + length
 	return kvOffset
 }
 
@@ -124,7 +131,7 @@ func (m *MemDB) findNode(key []byte, prev *[maxHeight]int) (n int, exactMatch bo
 				break
 			}
 			kOff := m.nodeData[n+fKey]
-			if c := m.compare(m.loadBytes(kOff), key); c >= 0 {
+			if c := bytes.Compare(m.loadBytes(kOff), key); c >= 0 {
 				exactMatch = c == 0
 				break
 			}
@@ -139,6 +146,7 @@ func (m *MemDB) findNode(key []byte, prev *[maxHeight]int) (n int, exactMatch bo
 
 // Get implements DB.Get, as documented in the leveldb/db package.
 func (m *MemDB) Get(key []byte) (value []byte, err error) {
+	// ? Why not call with a pointer/reference to value?
 	m.Mutex.RLock()
 	defer m.Mutex.RUnlock()
 	n, exactMatch := m.findNode(key, nil)
@@ -153,9 +161,6 @@ func (m *MemDB) Get(key []byte) (value []byte, err error) {
 func (m *MemDB) Set(key, value []byte) error {
 	m.Mutex.Lock()
 	defer m.Mutex.Unlock()
-	if m.Dirty == false {
-		m.Dirty = true
-	}
 	// Find the node, and its predecessors at all heights.
 	var prev [maxHeight]int
 	n, exactMatch := m.findNode(key, &prev)
@@ -193,9 +198,6 @@ func (m *MemDB) Set(key, value []byte) error {
 func (m *MemDB) Delete(key []byte) error {
 	m.Mutex.Lock()
 	defer m.Mutex.Unlock()
-	if m.Dirty == false {
-		m.Dirty = true
-	}
 	n, exactMatch := m.findNode(key, nil)
 	if !exactMatch || m.nodeData[n+fVal] == kvOffsetDeletedNode {
 		return ErrNotFound
@@ -228,37 +230,79 @@ func (m *MemDB) Close() error {
 	return nil
 }
 
-// ApproximateMemoryUsage returns the approximate memory usage of the MemDB.
-func (m *MemDB) ApproximateMemoryUsage() int {
-	m.Mutex.RLock()
-	defer m.Mutex.RUnlock()
-	return len(m.kvData)
-}
-
 // Empty returns whether the MemDB has no key/value pairs.
 func (m *MemDB) Empty() bool {
 	m.Mutex.Lock()
 	defer m.Mutex.Unlock()
 	return len(m.nodeData) == maxHeight
 }
+func (m *MemDB) Save(file io.Writer) error {
+	var snapshot []byte
+	var buf [binary.MaxVarintLen64]byte
+	var intLen int
+	intLen = binary.PutUvarint(buf[:], uint64(m.height))
+	snapshot = append(snapshot, buf[:intLen]...)
+	var nodeDataSnap []byte
+	nodeDataLen := 0
+	for _, node := range m.nodeData {
+		// 32 bit int should be sufficient here
+		intLen = binary.PutUvarint(buf[:], uint64(node))
+		nodeDataLen += intLen
+		nodeDataSnap = append(nodeDataSnap, buf[:intLen]...)
+	}
+	intLen = binary.PutUvarint(buf[:], uint64(nodeDataLen))
+	snapshot = append(snapshot, buf[:intLen]...)
+	snapshot = append(snapshot, nodeDataSnap...)
+	// add crc checks
+	kvLen := binary.PutUvarint(buf[:], uint64(len(m.kvData)))
+	snapshot = append(snapshot, buf[:kvLen]...)
+	snapshot = append(snapshot, m.kvData...)
+	length, err := file.Write(snapshot)
+	_ = length
+	return err
+}
+
+// use an iterator through the entire memtable and re-construct new node_data and kv_data using Set
+func (m *MemDB) Compact() *MemDB {
+	newMemDB := New()
+	// iterator's fill method automatically skips deleted nodes
+	t := m.Find([]byte{})
+	for t.Next() {
+		newMemDB.Set(t.Key(), t.Value())
+	}
+	return newMemDB
+}
+
+func Load(file io.Reader) (*MemDB, error) {
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(file)
+	contents := buf.Bytes()
+	memDB := NewMemDB()
+	height, bytesRead := binary.Uvarint(contents)
+	memDB.height = int(height)
+	nodeDataLen, numBytes := binary.Uvarint(contents[bytesRead:])
+	bytesRead += numBytes
+	endNodeData := bytesRead + int(nodeDataLen)
+	var nodeValue uint64
+	for bytesRead < endNodeData {
+		nodeValue, numBytes = binary.Uvarint(contents[bytesRead:])
+		memDB.nodeData = append(memDB.nodeData, int(nodeValue))
+		bytesRead += numBytes
+	}
+	kvLen, numBytes := binary.Uvarint(contents[bytesRead:])
+	bytesRead += numBytes
+	memDB.kvData = contents[bytesRead : bytesRead+int(kvLen)]
+	return memDB, nil
+}
 
 // New returns a new MemDB.
-func New() *MemDB {
+func NewMemDB() *MemDB {
 	return &MemDB{
 		height: 1,
 		kvData: make([]byte, 0, 4096),
 		// The first maxHeight values of nodeData are the next nodes after the
 		// head node at each possible height. Their initial value is zeroNode.
 		nodeData: make([]int, maxHeight, 256),
-	}
-}
-func Fresh() *MemDB {
-	return &MemDB{
-		height: 1,
-		kvData: make([]byte, 0, 4096),
-		// The first maxHeight values of nodeData are the next nodes after the
-		// head node at each possible height. Their initial value is zeroNode.
-		nodeData: make([]int, 0, 256),
 	}
 }
 

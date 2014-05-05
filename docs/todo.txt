@@ -1,0 +1,62 @@
+Server
+======
+Essential
+---------
+1d
+- dynamo commit log integration
+- snapshotting / split logic
+- s3 snapshotting
+- loading memtable - from s3 and dynamo
+
+1d
+- crc checks
+- test setup
+
+2d
+*addressing layer* -> revisit split
+
+2d
+*Server Coordination*
+
+1d
+*push special requirements?*
+
+
+Optimisations
+-------------
+*store.go* -> multiGET/PUT/DELETE for:
+a) same key_range
+b) different key_ranges on same server => pipelining
+
+*store.go* -> "Find"
+a) stream results back to client in batches
+b) tune the number of results in each call to "fill"
+
+*memDB*
+a) tune skiplist depth
+
+*Bloomfilters*
+
+- local caching and snapshotting (& commit log?)
+
+
+Client
+------
+- Key Structure
+- Address Caching
+
+- Query API
+- Txns
+- Indexing
+
+
+Dynamo replacement Requirements
+-------------------------------
+dht / structured overlay with:
+i)   consistent replication 
+     - some degree of control of location of data to ensure:	
+       a) reliable persistence - e.g. cross regions
+       b) fast replication of commits
+       c) locality of data to ampserver
+ii)  get, set, del, & cas - for commit log meta, key_range leases
+iii) get, set, del of snapshot and commit uid

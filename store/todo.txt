@@ -1,0 +1,151 @@
+Snapshotting
+------------
+The purpose of snapshotting is quick recovery and reloading of KeyRanges. The memory cost is a temporary copy of the memDB. The IO cost is in saving the snapshot to S3 and the local harddrive/SSD. The CPU cost is linear with the length of "memDB.nodeData".
+
+When to Snapshot?
+-----------------
+Since when well behaved a server should unload KeyRanges (snapshotting them) when shutting down or offloading its KeyRanges, we are essentially dealing with recovery from a hardware failure or fundamental sofware failure. These are relatively "rare" events, but we know they will occur often in a big system. So, what is the worst case we are willing to let happen in terms of recovery cost?  
+
+We should:
+a) Snapshot on compaction (every x KB (modified or deleted) or y writes if compactionActive == false)  e.g x=300, y=100 but rate limit snapshotting
+b) snapshot (without compacting) in the background aiming to reduce the number of commits that will need reprocessing in the event of failure
+
+
+How to Snapshot
+---------------
+a) Lock KeyRange, copy MemDB 
+b) save memdb to s3 then local
+c) set snapshottedUpTo
+d) prune commits
+ 
+
+Compaction
+----------
+The purpose of compaction is reduced RAM usage, shorter nodeData SkipLists, and smaller disk footprint.  The CPU cost is linear with the amount of keys and the amount of data. The memory cost is a temporary copy of the memDB. "Compact" may be slower under heavy write load, due to the need to catchup after compaction. Each compaction has a minimal impact on availability - locking the keyRange whilst the two memDB's are swapped.
+
+When to Compact?
+----------------
+every x KB (modified or deleted) or y writes if compactionActive == false
+
+For every X writes or when more than Y kB have been written to KV data. Under periods of high write contention compaction may be necessary to stop memory growth, and allow splitting of keyranges (and thereby distribution of load).
+
+
+How to Compact
+--------------
+if k.compactionActive==True {
+ return
+}
+k.compactionActive = True
+newMemdb := k.memDB.Compact()
+for n, ops := k.memDB.compactQueue {
+    if n == 
+    k.apply(ops)
+}
+k.swapMemDB(newMemdb)
+keyrange -- compactionActive -> set this, then copying memdb => writes go to compactQueue
+      	       	  		    -> 
+				    -> if set 
+      	       -- compactQueue
+ 
+Split
+-----
+split memdb
+snapshot both new ones
+write addressNode to point to new keyranges
+write old keyrange to point to two new memdbs (or two keyranges) 
+
+
+Load
+-----
+s3 + local
+   a) check address node points to this nodeID OR check root Lease
+   b) get keyrange
+   c) try load snapshot from disk - else load from s3
+   d) get commits
+     -> multiget to dynamodb into a map of commitIDs to Commit objects
+   e) apply commits
+     -> iterate backwards through commits from lastCommit (commit.Prev) prepending commit.Ops reference to a "ops" slice. iterate forwards through ops applying the writes.
+     -> async snapshot (this would ensure that there are no unapplied commits from more than one server -- assuming async snapshot succeeds before this server fails)
+   f) - write lock keyrange map
+      - add to keyrange map
+      - unlock keyrange map
+-- CPU (time) Cost is linear with length of "ops" slice and with size of data
+   => snapshot when there is more than X data in the commit logs, or Y commit seqIDs since lastSnapshot
+   -> what if there are a lot of commits to a keyrange in a short space of time, do we then end up writing to disk/s3 too often. Do we rate limit the snapshot with a timer since the last snapshot?
+
+Unload
+------
+snapshot
+
+Transfer
+--------
+
+
+
+createKeyRangeMeta
+-------------------
+
+
+BaseServer
+----------
+implement address server API - getRootTablet
+	  - address client
+implement data server API - createFirstDataTablet 
+StoreServer <-> AddressServer IPC
+
+Lease
+-----
+contest / acquire functions - check
+error handling
+testing
+
+
+testing
+
+--> first commit
+
+
+
+Server
+======
+EITHER
+  - address server keeps "node dead" list/cache.
+    - if going to send an address response, check node dead list
+    - if dead ask new node to serve
+OR
+  - on learning that a node is dead, find all keyranges that were associated (somehow - best effort is okay), ask new nodes to serve all data 
+
+
+- gossip based load balancing
+
+1. key size limit -- startKey size limit?
+2. add TabletAddressingLayer on Root KeyRangeSplit
+3. pipelining etc
+4. implement server kill -- close listener (RPC connections complete), deal with cached tablets 
+  	     	         -- close lease timer/ticker?
+
+High throughput -- PUSH/PUSHIF - task queue
+
+CRC - snapshots (+ commits?)
+Snappy - snapshots + commits
+Bloomfilter
+
+Think about concurrency setup
+
+
+implement LRU for % of records to hold in memory rather than serialise to disk
+implement cache version
+
+
+
+Client
+======
+clientAPI
+types
+rootNodes
+indexes
+txns
+
+
+Replace Dynamo + S3
+===================

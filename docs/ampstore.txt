@@ -4,7 +4,7 @@ Is loaded into application server and provides the AmpstoreAPI to application da
 
 A. Provides Put()  /Get/Delete/Push/Query as calls into Ampstore Node
 
-B. Provides cross key tranasctions, consistent reads.  
+B. Provides tranasctions across multiple keys (including consistent reads). 
 
 C. A high throughput task queue is provided
 
@@ -53,6 +53,7 @@ Dynamodb
 --------
 A. Commit Log
 B. A "Key Range" to "S3 Storage" mapping
+C. Server and Root Leases
 
 S3
 --
